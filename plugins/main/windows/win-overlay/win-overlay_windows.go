@@ -17,10 +17,12 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
 
 	"github.com/Microsoft/hcsshim"
+	"github.com/sirupsen/logrus"
 
 	"github.com/containernetworking/cni/pkg/skel"
 	"github.com/containernetworking/cni/pkg/types"
@@ -28,6 +30,7 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 
 	"github.com/containernetworking/plugins/pkg/errors"
+	"github.com/containernetworking/plugins/pkg/format"
 	"github.com/containernetworking/plugins/pkg/hns"
 	"github.com/containernetworking/plugins/pkg/ipam"
 	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
@@ -55,7 +58,13 @@ func loadNetConf(bytes []byte) (*NetConf, string, error) {
 	return n, n.CNIVersion, nil
 }
 
-func cmdAdd(args *skel.CmdArgs) error {
+func cmdAdd(args *skel.CmdArgs) (berr error) {
+	defer func() {
+		if berr != nil {
+			logrus.WithError(berr).Errorf("[WIN_OVERLAY] [ADD] Error %s", format.GetCmdArgsString(args))
+		}
+	}()
+
 	success := false
 	n, cniVersion, err := loadNetConf(args.StdinData)
 	if err != nil {
@@ -152,7 +161,13 @@ func cmdAdd(args *skel.CmdArgs) error {
 	return types.PrintResult(result, cniVersion)
 }
 
-func cmdDel(args *skel.CmdArgs) error {
+func cmdDel(args *skel.CmdArgs) (berr error) {
+	defer func() {
+		if berr != nil {
+			logrus.WithError(berr).Errorf("[WIN_OVERLAY] [DEL] Error %s", format.GetCmdArgsString(args))
+		}
+	}()
+
 	n, _, err := loadNetConf(args.StdinData)
 	if err != nil {
 		return err
@@ -173,5 +188,25 @@ func cmdCheck(_ *skel.CmdArgs) error {
 }
 
 func main() {
+	// configure the log output
+	logrus.SetFormatter(&format.SimpleTextFormatter{QuoteEmptyFields: true, FullTimestamp: true})
+	logrus.SetLevel(func() logrus.Level {
+		var level, err = logrus.ParseLevel(os.Getenv("LOG_LEVEL"))
+		if err != nil {
+			level = logrus.InfoLevel
+		}
+		return level
+	}())
+	err := os.MkdirAll(`c:\var\log\cni`, os.ModePerm)
+	if err != nil && !os.IsExist(err) {
+		os.Exit(1)
+	}
+	file, err := os.OpenFile(`c:\var\log\cni\cni.log`, os.O_CREATE|os.O_WRONLY|os.O_APPEND, os.FileMode(0777))
+	if err != nil {
+		os.Exit(1)
+	}
+	defer file.Close()
+	logrus.SetOutput(file)
+
 	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.PluginSupports("0.1.0", "0.2.0", "0.3.0"), bv.BuildString("win-overlay"))
 }

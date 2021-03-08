@@ -218,7 +218,7 @@ func isString(i interface{}) bool {
 	return ok
 }
 
-func cmdAdd(args *skel.CmdArgs) error {
+func cmdAdd(args *skel.CmdArgs) (berr error) {
 	n, err := loadFlannelNetConf(args.StdinData)
 	if err != nil {
 		return err
@@ -250,7 +250,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 	return doCmdAdd(args, n, fenv)
 }
 
-func cmdDel(args *skel.CmdArgs) error {
+func cmdDel(args *skel.CmdArgs) (berr error) {
 	nc, err := loadFlannelNetConf(args.StdinData)
 	if err != nil {
 		return err
