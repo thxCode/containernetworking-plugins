@@ -15,16 +15,16 @@
 package hns
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
-
 	"strings"
 
 	"github.com/Microsoft/hcsshim/hcn"
 	"github.com/buger/jsonparser"
 	"github.com/containernetworking/cni/pkg/types"
+
+	"github.com/containernetworking/plugins/pkg/ip"
 )
 
 // NetConf is the CNI spec
@@ -126,11 +126,14 @@ func (n *NetConf) MarshalPolicies() []json.RawMessage {
 // ApplyOutboundNatPolicy applies NAT Policy in VFP using HNS
 // Simultaneously an exception is added for the network that has to be Nat'd
 func (n *NetConf) ApplyOutboundNatPolicy(nwToNat string) {
+	_, nwToNatCidr, err := net.ParseCIDR(nwToNat)
+	if err != nil {
+		return
+	}
+
 	if n.Policies == nil {
 		n.Policies = make([]policy, 0)
 	}
-
-	nwToNatBytes := []byte(nwToNat)
 
 	for i, p := range n.Policies {
 		if !strings.EqualFold(p.Name, "EndpointPolicy") {
@@ -149,25 +152,28 @@ func (n *NetConf) ApplyOutboundNatPolicy(nwToNat string) {
 		exceptionListValue, dt, _, _ := jsonparser.Get(p.Value, "ExceptionList")
 		// OutBoundNAT must with ExceptionList, so don't need to judge jsonparser.NotExist
 		if dt == jsonparser.Array {
-			buf := bytes.Buffer{}
-			buf.WriteString(`{"Type": "OutBoundNAT", "ExceptionList": [`)
-
-			jsonparser.ArrayEach(exceptionListValue, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
+			masqIP4Net := ip.FromIPNet(nwToNatCidr)
+			var exceptionList []string
+			_, _ = jsonparser.ArrayEach(exceptionListValue, func(value []byte, dataType jsonparser.ValueType, offset int, err error) {
 				if dataType == jsonparser.String && len(value) != 0 {
-					if bytes.Compare(value, nwToNatBytes) != 0 {
-						buf.WriteByte('"')
-						buf.Write(value)
-						buf.WriteByte('"')
-						buf.WriteByte(',')
+					item := string(value)
+					_, itemCidr, err := net.ParseCIDR(item)
+					if err != nil {
+						return
+					}
+					itemIP4Net := ip.FromIPNet(itemCidr)
+					if masqIP4Net.Overlaps(itemIP4Net) {
+						masqIP4Net = itemIP4Net
+					} else if !itemIP4Net.Overlaps(masqIP4Net) {
+						exceptionList = append(exceptionList, item)
 					}
 				}
 			})
 
-			buf.WriteString(`"` + nwToNat + `"]}`)
-
+			exceptionList = append(exceptionList, masqIP4Net.ToIPNet().String())
 			n.Policies[i] = policy{
 				Name:  "EndpointPolicy",
-				Value: buf.Bytes(),
+				Value: []byte(`{"Type": "OutBoundNAT", "ExceptionList": ["` + strings.Join(exceptionList, `","`) + `"]}`),
 			}
 		} else {
 			n.Policies[i] = policy{
