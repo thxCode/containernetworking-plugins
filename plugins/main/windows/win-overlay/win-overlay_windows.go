@@ -197,11 +197,15 @@ func main() {
 		}
 		return level
 	}())
-	err := os.MkdirAll(`c:\var\log\cni`, os.ModePerm)
+	systemDrive := "C:"
+	if env := os.Getenv("SystemDrive"); env != "" {
+		systemDrive = env
+	}
+	err := os.MkdirAll(fmt.Sprintf(`%s\var\log\cni`, systemDrive), os.ModePerm)
 	if err != nil && !os.IsExist(err) {
 		os.Exit(1)
 	}
-	file, err := os.OpenFile(`c:\var\log\cni\cni.log`, os.O_CREATE|os.O_WRONLY|os.O_APPEND, os.FileMode(0777))
+	file, err := os.OpenFile(fmt.Sprintf(`%s\var\log\cni\cni.log`, systemDrive), os.O_CREATE|os.O_WRONLY|os.O_APPEND, os.FileMode(0777))
 	if err != nil {
 		os.Exit(1)
 	}

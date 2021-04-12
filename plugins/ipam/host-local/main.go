@@ -17,8 +17,12 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 
+	"github.com/sirupsen/logrus"
+
+	"github.com/containernetworking/plugins/pkg/format"
 	bv "github.com/containernetworking/plugins/pkg/utils/buildversion"
 	"github.com/containernetworking/plugins/plugins/ipam/host-local/backend/allocator"
 	"github.com/containernetworking/plugins/plugins/ipam/host-local/backend/disk"
@@ -30,10 +34,38 @@ import (
 )
 
 func main() {
+	logrus.SetFormatter(&format.SimpleTextFormatter{QuoteEmptyFields: true, FullTimestamp: true})
+	logrus.SetLevel(func() logrus.Level {
+		var level, err = logrus.ParseLevel(os.Getenv("LOG_LEVEL"))
+		if err != nil {
+			level = logrus.InfoLevel
+		}
+		return level
+	}())
+	systemDrive := "C:"
+	if env := os.Getenv("SystemDrive"); env != "" {
+		systemDrive = env
+	}
+	err := os.MkdirAll(fmt.Sprintf(`%s\var\log\cni`, systemDrive), os.ModePerm)
+	if err != nil && !os.IsExist(err) {
+		os.Exit(1)
+	}
+	file, err := os.OpenFile(fmt.Sprintf(`%s\var\log\cni\cni.log`, systemDrive), os.O_CREATE|os.O_WRONLY|os.O_APPEND, os.FileMode(0777))
+	if err != nil {
+		os.Exit(1)
+	}
+	defer file.Close()
+	logrus.SetOutput(file)
+
 	skel.PluginMain(cmdAdd, cmdCheck, cmdDel, version.All, bv.BuildString("host-local"))
 }
 
-func cmdCheck(args *skel.CmdArgs) error {
+func cmdCheck(args *skel.CmdArgs) (berr error) {
+	defer func() {
+		if berr != nil {
+			logrus.WithError(berr).Errorf("[HOST_LOCAL] [CHK] Error %s", format.GetCmdArgsString(args))
+		}
+	}()
 
 	ipamConf, _, err := allocator.LoadIPAMConfig(args.StdinData, args.Args)
 	if err != nil {
@@ -56,7 +88,13 @@ func cmdCheck(args *skel.CmdArgs) error {
 	return nil
 }
 
-func cmdAdd(args *skel.CmdArgs) error {
+func cmdAdd(args *skel.CmdArgs) (berr error) {
+	defer func() {
+		if berr != nil {
+			logrus.WithError(berr).Errorf("[HOST_LOCAL] [ADD] Error %s", format.GetCmdArgsString(args))
+		}
+	}()
+
 	ipamConf, confVersion, err := allocator.LoadIPAMConfig(args.StdinData, args.Args)
 	if err != nil {
 		return err
@@ -84,7 +122,7 @@ func cmdAdd(args *skel.CmdArgs) error {
 
 	// Store all requested IPs in a map, so we can easily remove ones we use
 	// and error if some remain
-	requestedIPs := map[string]net.IP{} //net.IP cannot be a key
+	requestedIPs := map[string]net.IP{} // net.IP cannot be a key
 
 	for _, ip := range ipamConf.IPArgs {
 		requestedIPs[ip.String()] = ip
@@ -134,7 +172,13 @@ func cmdAdd(args *skel.CmdArgs) error {
 	return types.PrintResult(result, confVersion)
 }
 
-func cmdDel(args *skel.CmdArgs) error {
+func cmdDel(args *skel.CmdArgs) (berr error) {
+	defer func() {
+		if berr != nil {
+			logrus.WithError(berr).Errorf("[HOST_LOCAL] [DEL] Error %s", format.GetCmdArgsString(args))
+		}
+	}()
+
 	ipamConf, _, err := allocator.LoadIPAMConfig(args.StdinData, args.Args)
 	if err != nil {
 		return err
