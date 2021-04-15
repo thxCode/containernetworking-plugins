@@ -95,7 +95,7 @@ func cmdAdd(args *skel.CmdArgs) (berr error) {
 
 	epName := hns.ConstructEndpointName(args.ContainerID, args.Netns, n.Name)
 
-	hnsEndpoint, err := hns.ProvisionEndpoint(epName, hnsNetwork.Id, args.ContainerID, args.Netns, func() (*hcsshim.HNSEndpoint, error) {
+	hnsEndpoint, err := hns.AddHnsEndpoint(epName, hnsNetwork.Id, args.ContainerID, args.Netns, func() (*hcsshim.HNSEndpoint, error) {
 		// run the IPAM plugin and get back the config to apply
 		r, err := ipam.ExecAdd(n.IPAM.Type, args.StdinData)
 		if err != nil {
@@ -149,12 +149,12 @@ func cmdAdd(args *skel.CmdArgs) (berr error) {
 		}
 	}()
 	if err != nil {
-		return errors.Annotatef(err, "error while ProvisionEndpoint(%v,%v,%v)", epName, hnsNetwork.Id, args.ContainerID)
+		return errors.Annotatef(err, "error while AddHnsEndpoint(%v,%v,%v)", epName, hnsNetwork.Id, args.ContainerID)
 	}
 
-	result, err := hns.ConstructResult(hnsNetwork, hnsEndpoint)
+	result, err := hns.ConstructHnsResult(hnsNetwork, hnsEndpoint)
 	if err != nil {
-		return errors.Annotatef(err, "error while constructResult")
+		return errors.Annotatef(err, "error while ConstructHnsResult")
 	}
 
 	success = true
@@ -179,7 +179,7 @@ func cmdDel(args *skel.CmdArgs) (berr error) {
 
 	epName := hns.ConstructEndpointName(args.ContainerID, args.Netns, n.Name)
 
-	return hns.DeprovisionEndpoint(epName, args.Netns, args.ContainerID)
+	return hns.RemoveHnsEndpoint(epName, args.Netns, args.ContainerID)
 }
 
 func cmdCheck(_ *skel.CmdArgs) error {

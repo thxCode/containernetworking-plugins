@@ -41,7 +41,6 @@ type EndpointInfo struct {
 	IpAddress    net.IP
 }
 
-// GetSandboxContainerID returns the sandbox ID of this pod
 func GetSandboxContainerID(containerID string, netNs string) string {
 	if len(netNs) != 0 && netNs != pauseContainerNetNS {
 		splits := strings.SplitN(netNs, ":", 2)
@@ -53,7 +52,6 @@ func GetSandboxContainerID(containerID string, netNs string) string {
 	return containerID
 }
 
-// short function so we know when to return "" for a string
 func GetIpString(ip *net.IP) string {
 	if len(*ip) == 0 {
 		return ""
@@ -62,221 +60,127 @@ func GetIpString(ip *net.IP) string {
 	}
 }
 
+func ConstructEndpointName(containerID string, netNs string, networkName string) string {
+	return GetSandboxContainerID(containerID, netNs) + "_" + networkName
+}
+
 func GenerateHnsEndpoint(epInfo *EndpointInfo, n *NetConf) (*hcsshim.HNSEndpoint, error) {
-	// run the IPAM plugin and get back the config to apply
 	hnsEndpoint, err := hcsshim.GetHNSEndpointByName(epInfo.EndpointName)
 	if err != nil && !hcsshim.IsNotExist(err) {
-		return nil, errors.Annotatef(err, "failed to get endpoint %q", epInfo.EndpointName)
+		return nil, errors.Annotatef(err, "failed to get HNSEndpoint %q", epInfo.EndpointName)
 	}
-
 	if hnsEndpoint != nil {
-		if hnsEndpoint.VirtualNetwork != epInfo.NetworkId {
-			_, err = hnsEndpoint.Delete()
-			if err != nil {
-				return nil, errors.Annotatef(err, "failed to delete endpoint %s", epInfo.EndpointName)
+		if !strings.EqualFold(hnsEndpoint.VirtualNetwork, epInfo.NetworkId) {
+			if _, err = hnsEndpoint.Delete(); err != nil {
+				return nil, errors.Annotatef(err, "failed to delete corrupted HNSEndpoint %s", epInfo.EndpointName)
 			}
-			hnsEndpoint = nil
+		} else {
+			return nil, fmt.Errorf("HNSEndpoint %s is already existed", epInfo.EndpointName)
 		}
 	}
 
 	if n.LoopbackDSR {
 		n.ApplyLoopbackDSR(&epInfo.IpAddress)
 	}
-	if hnsEndpoint == nil {
-		hnsEndpoint = &hcsshim.HNSEndpoint{
-			Name:           epInfo.EndpointName,
-			VirtualNetwork: epInfo.NetworkId,
-			DNSServerList:  strings.Join(epInfo.DNS.Nameservers, ","),
-			DNSSuffix:      strings.Join(epInfo.DNS.Search, ","),
-			GatewayAddress: GetIpString(&epInfo.Gateway),
-			IPAddress:      epInfo.IpAddress,
-			Policies:       n.MarshalPolicies(),
-		}
+	hnsEndpoint = &hcsshim.HNSEndpoint{
+		Name:           epInfo.EndpointName,
+		VirtualNetwork: epInfo.NetworkId,
+		DNSServerList:  strings.Join(epInfo.DNS.Nameservers, ","),
+		DNSSuffix:      strings.Join(epInfo.DNS.Search, ","),
+		GatewayAddress: GetIpString(&epInfo.Gateway),
+		IPAddress:      epInfo.IpAddress,
+		Policies:       n.MarshalPolicies(),
 	}
 	return hnsEndpoint, nil
 }
 
-func GenerateHcnEndpoint(epInfo *EndpointInfo, n *NetConf) (*hcn.HostComputeEndpoint, error) {
-	// run the IPAM plugin and get back the config to apply
-	hcnEndpoint, err := hcn.GetEndpointByName(epInfo.EndpointName)
-	if err != nil && !hcn.IsNotFoundError(err) {
-		return nil, errors.Annotatef(err, "failed to get endpoint %q", epInfo.EndpointName)
-	}
+type HnsEndpointMakerFunc func() (*hcsshim.HNSEndpoint, error)
 
-	if hcnEndpoint != nil {
-		// If the endpont already exists, then we should return error unless
-		// the endpoint is based on a different network then delete
-		// should that fail return error
-		if !strings.EqualFold(hcnEndpoint.HostComputeNetwork, epInfo.NetworkId) {
-			err = hcnEndpoint.Delete()
-			if err != nil {
-				return nil, errors.Annotatef(err, "failed to delete endpoint %s", epInfo.EndpointName)
-			}
-		} else {
-			return nil, fmt.Errorf("endpoint %q already exits", epInfo.EndpointName)
-		}
-	}
-
-	if hcnEndpoint == nil {
-		routes := []hcn.Route{
-			{
-				NextHop:           GetIpString(&epInfo.Gateway),
-				DestinationPrefix: GetDefaultDestinationPrefix(&epInfo.Gateway),
-			},
-		}
-
-		hcnDns := hcn.Dns{
-			Search:     epInfo.DNS.Search,
-			ServerList: epInfo.DNS.Nameservers,
-		}
-
-		hcnIpConfig := hcn.IpConfig{
-			IpAddress: GetIpString(&epInfo.IpAddress),
-		}
-		ipConfigs := []hcn.IpConfig{hcnIpConfig}
-
-		if n.LoopbackDSR {
-			n.ApplyLoopbackDSR(&epInfo.IpAddress)
-		}
-		hcnEndpoint = &hcn.HostComputeEndpoint{
-			SchemaVersion:      hcn.Version{Major: 2},
-			Name:               epInfo.EndpointName,
-			HostComputeNetwork: epInfo.NetworkId,
-			Dns:                hcnDns,
-			Routes:             routes,
-			IpConfigurations:   ipConfigs,
-			Policies: func() []hcn.EndpointPolicy {
-				if n.HcnPolicyArgs == nil {
-					n.HcnPolicyArgs = []hcn.EndpointPolicy{}
-				}
-				return n.HcnPolicyArgs
-			}(),
-		}
-	}
-	return hcnEndpoint, nil
-}
-
-// ConstructEndpointName constructs enpointId which is used to identify an endpoint from HNS
-// There is a special consideration for netNs name here, which is required for Windows Server 1709
-// containerID is the Id of the container on which the endpoint is worked on
-func ConstructEndpointName(containerID string, netNs string, networkName string) string {
-	return GetSandboxContainerID(containerID, netNs) + "_" + networkName
-}
-
-// DeprovisionEndpoint removes an endpoint from the container by sending a Detach request to HNS
-// For shared endpoint, ContainerDetach is used
-// for removing the endpoint completely, HotDetachEndpoint is used
-func DeprovisionEndpoint(epName string, netns string, containerID string) error {
-	if len(netns) == 0 {
-		return nil
-	}
-
+func AddHnsEndpoint(epName string, expectedNetworkId string, containerID string, netns string, makeEndpoint HnsEndpointMakerFunc) (*hcsshim.HNSEndpoint, error) {
 	hnsEndpoint, err := hcsshim.GetHNSEndpointByName(epName)
-
-	if hcsshim.IsNotExist(err) {
-		return nil
-	} else if err != nil {
-		return errors.Annotatef(err, "failed to find HNSEndpoint %s", epName)
-	}
-
-	if netns != pauseContainerNetNS {
-		// Shared endpoint removal. Do not remove the endpoint.
-		hnsEndpoint.ContainerDetach(containerID)
-		return nil
-	}
-
-	// Do not consider this as failure, else this would leak endpoints
-	hcsshim.HotDetachEndpoint(containerID, hnsEndpoint.Id)
-
-	// Do not return error
-	hnsEndpoint.Delete()
-
-	return nil
-}
-
-type EndpointMakerFunc func() (*hcsshim.HNSEndpoint, error)
-
-// ProvisionEndpoint provisions an endpoint to a container specified by containerID.
-// If an endpoint already exists, the endpoint is reused.
-// This call is idempotent
-func ProvisionEndpoint(epName string, expectedNetworkId string, containerID string, netns string, makeEndpoint EndpointMakerFunc) (*hcsshim.HNSEndpoint, error) {
-	// On the second add call we expect that the endpoint already exists. If it
-	// does not then we should return an error.
-	if netns != pauseContainerNetNS {
-		_, err := hcsshim.GetHNSEndpointByName(epName)
-		if err != nil {
+	if err != nil {
+		if !hcsshim.IsNotExist(err) {
 			return nil, errors.Annotatef(err, "failed to find HNSEndpoint %s", epName)
 		}
 	}
 
-	// check if endpoint already exists
-	createEndpoint := true
-	hnsEndpoint, err := hcsshim.GetHNSEndpointByName(epName)
-	if hnsEndpoint != nil && strings.EqualFold(hnsEndpoint.VirtualNetwork, expectedNetworkId) {
-		createEndpoint = false
+	// On the second add call we expect that the endpoint already exists. If it
+	// does not then we should return an error.
+	if netns != pauseContainerNetNS {
+		if hnsEndpoint == nil {
+			return nil, errors.Annotatef(err, "failed to find HNSEndpoint %s", epName)
+		}
 	}
 
-	if createEndpoint {
-		if hnsEndpoint != nil {
-			if _, err = hnsEndpoint.Delete(); err != nil {
-				return nil, errors.Annotate(err, "failed to delete the stale HNSEndpoint")
+	// Check whether endpoint is corrupted
+	if hnsEndpoint != nil {
+		if !strings.EqualFold(hnsEndpoint.VirtualNetwork, expectedNetworkId) {
+			_, err = hnsEndpoint.Delete()
+			if err != nil {
+				return nil, errors.Annotatef(err, "failed to delete corrupted HNSEndpoint %s", epName)
 			}
+			hnsEndpoint = nil
 		}
+	}
 
+	// Create endpoint
+	var isNewEndpoint bool
+	if hnsEndpoint == nil {
 		if hnsEndpoint, err = makeEndpoint(); err != nil {
 			return nil, errors.Annotate(err, "failed to make a new HNSEndpoint")
 		}
-
 		if hnsEndpoint, err = hnsEndpoint.Create(); err != nil {
 			return nil, errors.Annotate(err, "failed to create the new HNSEndpoint")
 		}
-
+		isNewEndpoint = true
 	}
 
-	// hot attach
+	// Hot attach
 	if err := hcsshim.HotAttachEndpoint(containerID, hnsEndpoint.Id); err != nil {
-		if createEndpoint {
-			err := DeprovisionEndpoint(epName, netns, containerID)
-			if err != nil {
-				return nil, errors.Annotatef(err, "failed to Deprovsion after HotAttach failure")
+		if isNewEndpoint {
+			if err := RemoveHnsEndpoint(epName, netns, containerID); err != nil {
+				return nil, errors.Annotatef(err, "failed to remove the new HNSEndpoint %s after attaching container %s failure", hnsEndpoint.Id, containerID)
 			}
 		}
 		if hcsshim.ErrComputeSystemDoesNotExist == err {
 			return hnsEndpoint, nil
 		}
-		return nil, err
+		return nil, errors.Annotatef(err, "failed to attach container %s to HNSEndpoint %s", containerID, hnsEndpoint.Id)
 	}
 
 	return hnsEndpoint, nil
 }
 
-type HcnEndpointMakerFunc func() (*hcn.HostComputeEndpoint, error)
-
-func AddHcnEndpoint(epName string, expectedNetworkId string, namespace string,
-	makeEndpoint HcnEndpointMakerFunc) (*hcn.HostComputeEndpoint, error) {
-
-	hcnEndpoint, err := makeEndpoint()
-	if err != nil {
-		return nil, errors.Annotate(err, "failed to make a new HNSEndpoint")
+func RemoveHnsEndpoint(epName string, netns string, containerID string) error {
+	if len(netns) == 0 {
+		return nil
 	}
 
-	if hcnEndpoint, err = hcnEndpoint.Create(); err != nil {
-		return nil, errors.Annotate(err, "failed to create the new HNSEndpoint")
-	}
-
-	err = hcn.AddNamespaceEndpoint(namespace, hcnEndpoint.Id)
+	hnsEndpoint, err := hcsshim.GetHNSEndpointByName(epName)
 	if err != nil {
-		if err := RemoveHcnEndpoint(epName); err != nil {
-			return nil, errors.Annotatef(err, "failed to Remove Endpoint after AddNamespaceEndpoint failure")
+		if hcsshim.IsNotExist(err) {
+			return nil
 		}
-		return nil, errors.Annotate(err, "failed to Add endpoint to namespace")
+		return errors.Annotatef(err, "failed to find HNSEndpoint %s", epName)
 	}
-	return hcnEndpoint, nil
 
+	// Shared endpoint removal
+	if netns != pauseContainerNetNS {
+		// Do not remove the endpoint
+		_ = hnsEndpoint.ContainerDetach(containerID)
+		return nil
+	}
+
+	// Do not consider this as failure, else this would leak endpoints
+	_ = hcsshim.HotDetachEndpoint(containerID, hnsEndpoint.Id)
+
+	// Do not return error
+	_, _ = hnsEndpoint.Delete()
+
+	return nil
 }
 
-// ConstructResult constructs the CNI result for the endpoint
-func ConstructResult(hnsNetwork *hcsshim.HNSNetwork, hnsEndpoint *hcsshim.HNSEndpoint) (*current.Result, error) {
+func ConstructHnsResult(hnsNetwork *hcsshim.HNSNetwork, hnsEndpoint *hcsshim.HNSEndpoint) (*current.Result, error) {
 	resultInterface := &current.Interface{
 		Name: hnsEndpoint.Name,
 		Mac:  hnsEndpoint.MacAddress,
@@ -299,7 +203,8 @@ func ConstructResult(hnsNetwork *hcsshim.HNSNetwork, hnsEndpoint *hcsshim.HNSEnd
 		Version: ipVersion,
 		Address: net.IPNet{
 			IP:   hnsEndpoint.IPAddress,
-			Mask: ipSubnet.Mask},
+			Mask: ipSubnet.Mask,
+		},
 		Gateway: net.ParseIP(hnsEndpoint.GatewayAddress),
 	}
 	result := &current.Result{}
@@ -313,21 +218,118 @@ func ConstructResult(hnsNetwork *hcsshim.HNSNetwork, hnsEndpoint *hcsshim.HNSEnd
 	return result, nil
 }
 
-// This version follows the v2 workflow of removing the endpoint from the namespace and deleting it
-func RemoveHcnEndpoint(epName string) error {
-	hcnEndpoint, err := hcn.GetEndpointByName(epName)
-	if hcn.IsNotFoundError(err) {
-		return nil
-	} else if err != nil {
-		_ = fmt.Errorf("[win-cni] Failed to find endpoint %v, err:%v", epName, err)
-		return err
+func GenerateHcnEndpoint(epInfo *EndpointInfo, n *NetConf) (*hcn.HostComputeEndpoint, error) {
+	hcnEndpoint, err := hcn.GetEndpointByName(epInfo.EndpointName)
+	if err != nil && !hcn.IsNotFoundError(err) {
+		return nil, errors.Annotatef(err, "failed to get endpoint %q", epInfo.EndpointName)
 	}
+
 	if hcnEndpoint != nil {
-		err = hcnEndpoint.Delete()
-		if err != nil {
-			return fmt.Errorf("[win-cni] Failed to delete endpoint %v, err:%v", epName, err)
+		if !strings.EqualFold(hcnEndpoint.HostComputeNetwork, epInfo.NetworkId) {
+			if err = hcnEndpoint.Delete(); err != nil {
+				return nil, errors.Annotatef(err, "failed to delete endpoint %s", epInfo.EndpointName)
+			}
+		} else {
+			return nil, fmt.Errorf("HostComputeNetwork %s is already existed", epInfo.EndpointName)
 		}
 	}
+
+	if n.LoopbackDSR {
+		n.ApplyLoopbackDSR(&epInfo.IpAddress)
+	}
+	hcnEndpoint = &hcn.HostComputeEndpoint{
+		SchemaVersion: hcn.SchemaVersion{
+			Major: 2,
+			Minor: 0,
+		},
+		Name:               epInfo.EndpointName,
+		HostComputeNetwork: epInfo.NetworkId,
+		Dns: hcn.Dns{
+			Domain:     epInfo.DNS.Domain,
+			Search:     epInfo.DNS.Search,
+			ServerList: epInfo.DNS.Nameservers,
+			Options:    epInfo.DNS.Options,
+		},
+		Routes: []hcn.Route{
+			{
+				NextHop:           GetIpString(&epInfo.Gateway),
+				DestinationPrefix: GetDefaultDestinationPrefix(&epInfo.Gateway),
+			},
+		},
+		IpConfigurations: []hcn.IpConfig{
+			{
+				IpAddress: GetIpString(&epInfo.IpAddress),
+			},
+		},
+		Policies: func() []hcn.EndpointPolicy {
+			if n.HcnPolicyArgs == nil {
+				n.HcnPolicyArgs = []hcn.EndpointPolicy{}
+			}
+			return n.HcnPolicyArgs
+		}(),
+	}
+	return hcnEndpoint, nil
+}
+
+type HcnEndpointMakerFunc func() (*hcn.HostComputeEndpoint, error)
+
+func AddHcnEndpoint(epName string, expectedNetworkId string, namespace string, makeEndpoint HcnEndpointMakerFunc) (*hcn.HostComputeEndpoint, error) {
+	hcnEndpoint, err := hcn.GetEndpointByName(epName)
+	if err != nil {
+		if !hcn.IsNotFoundError(err) {
+			return nil, errors.Annotatef(err, "failed to find HostComputeEndpoint %s", epName)
+		}
+	}
+
+	// Check if endpoint already exists
+	if hcnEndpoint != nil {
+		if !strings.EqualFold(hcnEndpoint.HostComputeNetwork, expectedNetworkId) {
+			if err := hcnEndpoint.Delete(); err != nil {
+				return nil, errors.Annotatef(err, "failed to delete corrupted HostComputeEndpoint %s", epName)
+			}
+			hcnEndpoint = nil
+		}
+	}
+
+	// Create endpoint
+	var isNewEndpoint bool
+	if hcnEndpoint == nil {
+		if hcnEndpoint, err = makeEndpoint(); err != nil {
+			return nil, errors.Annotate(err, "failed to make a new HostComputeEndpoint")
+		}
+		if hcnEndpoint, err = hcnEndpoint.Create(); err != nil {
+			return nil, errors.Annotate(err, "failed to create the new HostComputeEndpoint")
+		}
+		isNewEndpoint = true
+	}
+
+	err = hcn.AddNamespaceEndpoint(namespace, hcnEndpoint.Id)
+	if err != nil {
+		if isNewEndpoint {
+			if err := RemoveHcnEndpoint(epName); err != nil {
+				return nil, errors.Annotatef(err, "failed to remove the new HostComputeEndpoint %s after adding namespace %s failure", hcnEndpoint.Id, namespace)
+			}
+		}
+		return nil, errors.Annotatef(err, "failed to attach HostComputeEndpoint %s to namespace %s", hcnEndpoint.Id, namespace)
+	}
+	return hcnEndpoint, nil
+}
+
+func RemoveHcnEndpoint(epName string) error {
+	hcnEndpoint, err := hcn.GetEndpointByName(epName)
+	if err != nil {
+		if hcn.IsNotFoundError(err) {
+			return nil
+		}
+		return errors.Annotatef(err, "failed to find HostComputeEndpoint %s", epName)
+	}
+
+	// TODO should we ignore the return error ?
+	err = hcnEndpoint.Delete()
+	if err != nil {
+		return errors.Annotatef(err, "failed to remove HostComputeEndpoint %s", epName)
+	}
+
 	return nil
 }
 
@@ -348,7 +350,7 @@ func ConstructHcnResult(hcnNetwork *hcn.HostComputeNetwork, hcnEndpoint *hcn.Hos
 	} else if ipv6 := ipAddress.To16(); ipv6 != nil {
 		ipVersion = "6"
 	} else {
-		return nil, fmt.Errorf("[win-cni] The IPAddress of hnsEndpoint isn't a valid ipv4 or ipv6 Address.")
+		return nil, fmt.Errorf("IPAddress of HostComputeEndpoint %s isn't a valid ipv4 or ipv6 Address", hcnEndpoint.Name)
 	}
 
 	resultIPConfig := &current.IPConfig{

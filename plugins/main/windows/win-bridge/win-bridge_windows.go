@@ -113,7 +113,7 @@ func cmdHnsAdd(args *skel.CmdArgs, n *NetConf) (*current.Result, error) {
 	}
 
 	epName := hns.ConstructEndpointName(args.ContainerID, args.Netns, n.Name)
-	hnsEndpoint, err := hns.ProvisionEndpoint(epName, hnsNetwork.Id, args.ContainerID, args.Netns, func() (*hcsshim.HNSEndpoint, error) {
+	hnsEndpoint, err := hns.AddHnsEndpoint(epName, hnsNetwork.Id, args.ContainerID, args.Netns, func() (*hcsshim.HNSEndpoint, error) {
 		epInfo, err := ProcessEndpointArgs(args, n)
 		if err != nil {
 			return nil, errors.Annotatef(err, "error while ProcessEndpointArgs")
@@ -127,12 +127,12 @@ func cmdHnsAdd(args *skel.CmdArgs, n *NetConf) (*current.Result, error) {
 		return hnsEndpoint, nil
 	})
 	if err != nil {
-		return nil, errors.Annotatef(err, "error while ProvisionEndpoint(%v,%v,%v)", epName, hnsNetwork.Id, args.ContainerID)
+		return nil, errors.Annotatef(err, "error while AddHnsEndpoint(%v,%v,%v)", epName, hnsNetwork.Id, args.ContainerID)
 	}
 
-	result, err := hns.ConstructResult(hnsNetwork, hnsEndpoint)
+	result, err := hns.ConstructHnsResult(hnsNetwork, hnsEndpoint)
 	if err != nil {
-		return nil, errors.Annotatef(err, "error while constructResult")
+		return nil, errors.Annotatef(err, "error while ConstructHnsResult")
 	}
 
 	return result, nil
@@ -232,7 +232,7 @@ func cmdDel(args *skel.CmdArgs) (berr error) {
 	if n.ApiVersion == 2 {
 		return hns.RemoveHcnEndpoint(epName)
 	} else {
-		return hns.DeprovisionEndpoint(epName, args.Netns, args.ContainerID)
+		return hns.RemoveHnsEndpoint(epName, args.Netns, args.ContainerID)
 	}
 }
 
