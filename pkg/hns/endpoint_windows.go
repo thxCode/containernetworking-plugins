@@ -262,10 +262,10 @@ func GenerateHcnEndpoint(epInfo *EndpointInfo, n *NetConf) (*hcn.HostComputeEndp
 			},
 		},
 		Policies: func() []hcn.EndpointPolicy {
-			if n.HcnPolicyArgs == nil {
-				n.HcnPolicyArgs = []hcn.EndpointPolicy{}
+			if n.HcnPolicies == nil {
+				n.HcnPolicies = []hcn.EndpointPolicy{}
 			}
-			return n.HcnPolicyArgs
+			return n.HcnPolicies
 		}(),
 	}
 	return hcnEndpoint, nil
