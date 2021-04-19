@@ -95,7 +95,7 @@ func GenerateHnsEndpoint(epInfo *EndpointInfo, n *NetConf) (*hcsshim.HNSEndpoint
 	}
 
 	if n.LoopbackDSR {
-		n.ApplyLoopbackDSR(&epInfo.IpAddress)
+		n.ApplyLoopbackDSRPolicy(&epInfo.IpAddress)
 	}
 	hnsEndpoint = &hcsshim.HNSEndpoint{
 		Name:           epInfo.EndpointName,
@@ -104,7 +104,7 @@ func GenerateHnsEndpoint(epInfo *EndpointInfo, n *NetConf) (*hcsshim.HNSEndpoint
 		DNSSuffix:      strings.Join(epInfo.DNS.Search, ","),
 		GatewayAddress: GetIpString(&epInfo.Gateway),
 		IPAddress:      epInfo.IpAddress,
-		Policies:       n.MarshalPolicies(),
+		Policies:       n.GetHNSEndpointPolicies(),
 	}
 	return hnsEndpoint, nil
 }
@@ -240,7 +240,7 @@ func GenerateHcnEndpoint(epInfo *EndpointInfo, n *NetConf) (*hcn.HostComputeEndp
 	}
 
 	if n.LoopbackDSR {
-		n.ApplyLoopbackDSR(&epInfo.IpAddress)
+		n.ApplyLoopbackDSRPolicy(&epInfo.IpAddress)
 	}
 	hcnEndpoint = &hcn.HostComputeEndpoint{
 		SchemaVersion: hcn.SchemaVersion{
@@ -266,12 +266,7 @@ func GenerateHcnEndpoint(epInfo *EndpointInfo, n *NetConf) (*hcn.HostComputeEndp
 				IpAddress: GetIpString(&epInfo.IpAddress),
 			},
 		},
-		Policies: func() []hcn.EndpointPolicy {
-			if n.HcnPolicyArgs == nil {
-				n.HcnPolicyArgs = []hcn.EndpointPolicy{}
-			}
-			return n.HcnPolicyArgs
-		}(),
+		Policies: n.GetHostComputeEndpointPolicies(),
 	}
 	return hcnEndpoint, nil
 }
